@@ -24,12 +24,16 @@ function usage() {
   node src/cli.js extract <sales-navigator-url> [count]
   node src/cli.js company-profile --from <extract.json> [--out <path>] [--include-raw]
   node src/cli.js company-profile --id <company-id-or-slug> [--out <path>] [--include-raw]
-  node src/cli.js jobs --from <companies-or-profiles.json> [--count <n>] [--out <path>] [--include-raw]
+  node src/cli.js jobs --from <companies-or-profiles.json> [--count <n>] [--region <geo-id>] [--out <path>] [--include-raw]
   node src/cli.js list-accounts
 
 Omit --count on extract to fetch every page Unipile returns (LinkedIn caps Sales
 Navigator people at ~2500 and companies at ~1000). On jobs, --count caps jobs
 per company; omit it to paginate each company's classic job search fully.
+
+Classic job search is location-scoped. It defaults to "Worldwide" (92000000) so a
+company's postings show up regardless of the acting seat's country; pass --region
+with a LinkedIn geo id to narrow (Germany is 101282230), or set JOB_REGION.
 
 People:    https://www.linkedin.com/sales/search/people?...
 Companies: https://www.linkedin.com/sales/search/company?...`;
@@ -46,7 +50,8 @@ function parseArgs(argv) {
       token === "--count" ||
       token === "--out" ||
       token === "--from" ||
-      token === "--id"
+      token === "--id" ||
+      token === "--region"
     ) {
       const value = argv[++i];
       if (value === undefined) throw new Error(`Missing value for ${token}`);
@@ -263,6 +268,7 @@ async function cmdJobs(args) {
     envelope,
     count,
     includeRaw: Boolean(args.includeRaw),
+    region: args.region,
     onProgress({ index, total, companyId, ok, jobCount, error }) {
       console.error(
         `  ${index}/${total} ${companyId}${ok ? `  ${jobCount} jobs` : `  ! ${error || "failed"}`}`,

@@ -62,6 +62,9 @@ export function getConfig() {
     maxRetries: Number(process.env.MAX_RETRIES ?? 4),
     pageLimit: 100,
     jobPageLimit: 50,
+    // Classic job search defaults to the acting account's location.
+    // "Worldwide" keeps a company's postings visible regardless of seat country.
+    jobRegion: process.env.JOB_REGION?.trim() || "92000000",
     outputDir: process.env.OUTPUT_DIR?.trim() || join(ROOT, "output"),
   };
 }

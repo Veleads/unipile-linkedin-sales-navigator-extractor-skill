@@ -46,9 +46,11 @@ export async function fetchJobsForCompany({
   companyId,
   count,
   includeRaw,
+  region,
   onPage,
 }) {
   const limit = config.jobPageLimit ?? 50;
+  const searchRegion = region ?? config.jobRegion;
   const target = count ?? Infinity;
   const seen = new Set();
   const jobs = [];
@@ -59,7 +61,7 @@ export async function fetchJobsForCompany({
   while (jobs.length < target) {
     await humanDelay(config, { first: pages === 0 });
 
-    const page = await client.searchJobs({ companyId, cursor, limit });
+    const page = await client.searchJobs({ companyId, cursor, limit, region: searchRegion });
     pages += 1;
 
     const rawItems = pageItems(page);
@@ -113,6 +115,7 @@ export async function attachJobs({
   envelope,
   count,
   includeRaw,
+  region,
   onProgress,
 }) {
   const kind = envelope?.kind;
@@ -143,6 +146,7 @@ export async function attachJobs({
         companyId,
         count,
         includeRaw,
+        region,
         onPage({ pages: pageNum, pageSize, jobs: jobCount, totalCount: total }) {
           const totalLabel = total == null ? "?" : total;
           console.error(

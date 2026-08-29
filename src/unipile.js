@@ -318,8 +318,11 @@ export class UnipileClient {
   /**
    * One page of classic LinkedIn job search for a numeric company id.
    * Uses the profile account pool (no Sales Navigator required).
+   *
+   * `region` matters: without it LinkedIn scopes the search to the acting
+   * account's own location, so a company that only posts abroad returns 0.
    */
-  searchJobs({ companyId, cursor, limit }) {
+  searchJobs({ companyId, cursor, limit, region }) {
     return this.withAccountRotation(
       "profile",
       (accountId) =>
@@ -331,6 +334,7 @@ export class UnipileClient {
             category: "jobs",
             company: [String(companyId)],
             sort_by: "date",
+            ...(region ? { region: String(region) } : {}),
           },
         }),
       { cursor },
