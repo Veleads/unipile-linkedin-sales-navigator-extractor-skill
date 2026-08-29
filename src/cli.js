@@ -8,9 +8,12 @@ import { UnipileClient } from "./unipile.js";
 
 function usage() {
   return `Usage:
-  node src/cli.js extract --url <sales-navigator-url> --count <n> [--out <path>] [--include-raw]
-  node src/cli.js extract <sales-navigator-url> <count>
+  node src/cli.js extract --url <sales-navigator-url> [--count <n>] [--out <path>] [--include-raw]
+  node src/cli.js extract <sales-navigator-url> [count]
   node src/cli.js list-accounts
+
+Omit --count to fetch every page Unipile returns (LinkedIn caps Sales Navigator
+people at ~2500 and companies at ~1000, even if the search total is higher).
 
 People:    https://www.linkedin.com/sales/search/people?...
 Companies: https://www.linkedin.com/sales/search/company?...`;
@@ -53,15 +56,20 @@ function writeJson(path, data) {
   writeFileSync(path, JSON.stringify(data, null, 2) + "\n", "utf8");
 }
 
+function parseCount(raw) {
+  if (raw === undefined) return undefined;
+  const count = Number(raw);
+  if (!Number.isInteger(count) || count < 1) {
+    throw new Error(`--count must be a positive integer, got ${raw}\n\n${usage()}`);
+  }
+  return count;
+}
+
 async function cmdExtract(args) {
   const url = args.url || args._[0];
-  const countRaw = args.count ?? args._[1];
-  const count = Number(countRaw);
+  const count = parseCount(args.count ?? args._[1]);
 
   if (!url) throw new Error(`Missing --url.\n\n${usage()}`);
-  if (!Number.isInteger(count) || count < 1) {
-    throw new Error(`--count must be a positive integer, got ${countRaw}\n\n${usage()}`);
-  }
 
   const config = getConfig();
   const client = new UnipileClient(config);
@@ -72,8 +80,10 @@ async function cmdExtract(args) {
     count,
     onProgress({ pages, returned, requested, totalCount, pageSize }) {
       const total = totalCount == null ? "?" : totalCount;
+      const unique =
+        requested == null ? `${returned} unique` : `${returned}/${requested} unique`;
       console.error(
-        `  page ${pages}: +${pageSize} from Unipile, ${returned}/${requested} unique (search has ${total})`,
+        `  page ${pages}: +${pageSize} from Unipile, ${unique} (search has ${total})`,
       );
     },
   });

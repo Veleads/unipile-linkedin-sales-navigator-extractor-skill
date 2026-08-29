@@ -37,6 +37,8 @@ export async function extract({ client, config, url, count, onProgress }) {
   const normalize = kind === "people" ? normalizeLead : normalizeCompany;
   const keyOf = kind === "people" ? leadKey : companyKey;
   const limit = config.pageLimit ?? 100;
+  const target = count ?? Infinity;
+  const requested = count ?? null;
 
   const seen = new Set();
   const items = [];
@@ -44,7 +46,7 @@ export async function extract({ client, config, url, count, onProgress }) {
   let pages = 0;
   let totalCount = null;
 
-  while (items.length < count) {
+  while (items.length < target) {
     await humanDelay(config, { first: pages === 0 });
 
     const page = await client.search({ url, cursor, limit });
@@ -62,7 +64,7 @@ export async function extract({ client, config, url, count, onProgress }) {
 
     let added = 0;
     for (const raw of pageItems) {
-      if (items.length >= count) break;
+      if (items.length >= target) break;
       const item = normalize(raw);
       const key = keyOf(item);
       if (!key || seen.has(key)) continue;
@@ -75,16 +77,16 @@ export async function extract({ client, config, url, count, onProgress }) {
       kind,
       pages,
       returned: items.length,
-      requested: count,
+      requested,
       totalCount,
       added,
       pageSize: pageItems.length,
     });
 
     const next = page?.cursor || page?.next_cursor || null;
-    if (!pageItems.length || !next || items.length >= count) break;
+    if (!pageItems.length || !next || items.length >= target) break;
     cursor = next;
   }
 
-  return { kind, items, requested: count, totalCount, pages };
+  return { kind, items, requested, totalCount, pages };
 }

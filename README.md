@@ -23,10 +23,16 @@ npm run extract -- --url "https://www.linkedin.com/sales/search/people?..." --co
 npm run extract -- --url "https://www.linkedin.com/sales/search/company?..." --count 50
 ```
 
-JSON is written to `output/people-<timestamp>.json` or `output/companies-<timestamp>.json`. Pass `--include-raw` to keep Unipile's original item payload.
+Omit `--count` to paginate until Unipile has no next cursor (everything LinkedIn returns for that query):
+
+```bash
+npm run extract -- --url "https://www.linkedin.com/sales/search/people?..."
+```
+
+LinkedIn still caps a single Sales Navigator search at about **2,500 people** or **1,000 companies**, even if Unipile's `unipile_total_count` is higher. JSON is written to `output/people-<timestamp>.json` or `output/companies-<timestamp>.json`. Pass `--include-raw` to keep Unipile's original item payload.
 
 Each search page waits a random 2.5–6.5s (plus an occasional longer pause) so pagination does not look like a tight loop. Override with `DELAY_MIN_MS` / `DELAY_MAX_MS`.
 
 ## Claude Code
 
-`/extract-leads <url> <count>` runs the same CLI.
+`/extract-leads <url> [count]` runs the same CLI. Omit count to fetch every page Unipile returns.
