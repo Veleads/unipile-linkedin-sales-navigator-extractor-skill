@@ -1,0 +1,17 @@
+{
+  "name": "unipile-lead-extractor",
+  "version": "1.0.0",
+  "description": "Extract people or companies from a LinkedIn Sales Navigator search URL via the Unipile API.",
+  "type": "module",
+  "bin": {
+    "leads": "./src/cli.js"
+  },
+  "scripts": {
+    "extract": "node src/cli.js extract",
+    "accounts": "node src/cli.js list-accounts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "private": true
+}
