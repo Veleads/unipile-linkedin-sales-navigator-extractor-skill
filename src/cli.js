@@ -1,19 +1,35 @@
 #!/usr/bin/env node
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getConfig } from "./config.js";
 import { extract } from "./extract.js";
-import { UnipileClient } from "./unipile.js";
+import { attachJobs } from "./jobs.js";
+import {
+  enrichFromExtract,
+  fetchOneProfile,
+  parseCompanyIdentifier,
+  withoutRaw,
+} from "./profiles.js";
+import {
+  UnipileClient,
+  hasSalesNavigator,
+  isLinkedInAccount,
+  sourceStatusSummary,
+} from "./unipile.js";
 
 function usage() {
   return `Usage:
   node src/cli.js extract --url <sales-navigator-url> [--count <n>] [--out <path>] [--include-raw]
   node src/cli.js extract <sales-navigator-url> [count]
+  node src/cli.js company-profile --from <extract.json> [--out <path>] [--include-raw]
+  node src/cli.js company-profile --id <company-id-or-slug> [--out <path>] [--include-raw]
+  node src/cli.js jobs --from <companies-or-profiles.json> [--count <n>] [--out <path>] [--include-raw]
   node src/cli.js list-accounts
 
-Omit --count to fetch every page Unipile returns (LinkedIn caps Sales Navigator
-people at ~2500 and companies at ~1000, even if the search total is higher).
+Omit --count on extract to fetch every page Unipile returns (LinkedIn caps Sales
+Navigator people at ~2500 and companies at ~1000). On jobs, --count caps jobs
+per company; omit it to paginate each company's classic job search fully.
 
 People:    https://www.linkedin.com/sales/search/people?...
 Companies: https://www.linkedin.com/sales/search/company?...`;
@@ -25,7 +41,13 @@ function parseArgs(argv) {
     const token = argv[i];
     if (token === "--include-raw") {
       args.includeRaw = true;
-    } else if (token === "--url" || token === "--count" || token === "--out") {
+    } else if (
+      token === "--url" ||
+      token === "--count" ||
+      token === "--out" ||
+      token === "--from" ||
+      token === "--id"
+    ) {
       const value = argv[++i];
       if (value === undefined) throw new Error(`Missing value for ${token}`);
       args[token.slice(2)] = value;
@@ -36,11 +58,6 @@ function parseArgs(argv) {
     }
   }
   return args;
-}
-
-function withoutRaw(item) {
-  const { _raw, ...rest } = item;
-  return rest;
 }
 
 function timestamp() {
@@ -65,6 +82,19 @@ function parseCount(raw) {
   return count;
 }
 
+function readExtract(path) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    throw new Error(`Could not read extract JSON at ${path}: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.items)) {
+    throw new Error(`${path} is not an extract JSON file (missing items array).`);
+  }
+  return parsed;
+}
+
 async function cmdExtract(args) {
   const url = args.url || args._[0];
   const count = parseCount(args.count ?? args._[1]);
@@ -73,6 +103,7 @@ async function cmdExtract(args) {
 
   const config = getConfig();
   const client = new UnipileClient(config);
+  await client.ensureLinkedInAccounts();
   const result = await extract({
     client,
     config,
@@ -108,15 +139,167 @@ async function cmdExtract(args) {
   console.log(outPath);
 }
 
-async function cmdListAccounts() {
-  const config = getConfig({ requireAccount: false });
+async function cmdCompanyProfile(args) {
+  const fromPath = args.from;
+  const idArg = args.id || args._[0];
+  const urlArg = args.url;
+
+  if (!fromPath && !idArg && !urlArg) {
+    throw new Error(`Missing --from or --id.\n\n${usage()}`);
+  }
+  if (fromPath && (idArg || urlArg)) {
+    throw new Error(`Use either --from or --id, not both.\n\n${usage()}`);
+  }
+
+  const config = getConfig();
   const client = new UnipileClient(config);
-  const data = await client.listAccounts();
-  const accounts = Array.isArray(data?.items)
-    ? data.items
-    : Array.isArray(data)
-      ? data
-      : [];
+  await client.ensureLinkedInAccounts();
+
+  if (fromPath) {
+    const envelope = readExtract(fromPath);
+    const result = await enrichFromExtract({
+      client,
+      config,
+      envelope,
+      includeRaw: Boolean(args.includeRaw),
+      onProgress({ index, total, identifier, ok, error }) {
+        const label = identifier || "(no id)";
+        console.error(
+          `  ${index}/${total} ${label}${ok ? "" : `  ! ${error || "failed"}`}`,
+        );
+      },
+    });
+
+    const requested = result.requested;
+    const failed = result.failed;
+    const returned = requested - failed;
+
+    const out = {
+      enriched_at: new Date().toISOString(),
+      kind: result.kind,
+      source: fromPath,
+      url: envelope.url ?? null,
+      requested,
+      returned,
+      failed,
+      skipped: result.skipped || 0,
+      items: result.items,
+    };
+
+    const outPath =
+      args.out || join(config.outputDir, `companies-profiles-${timestamp()}.json`);
+    writeJson(outPath, out);
+    console.error(
+      `Wrote ${returned} enriched ${result.kind} to ${outPath}` +
+        (failed ? ` (${failed} failed)` : "") +
+        (result.skipped ? ` (${result.skipped} skipped)` : ""),
+    );
+    console.log(outPath);
+    return;
+  }
+
+  const identifier = parseCompanyIdentifier(idArg || urlArg);
+  if (!identifier) {
+    throw new Error(`Could not parse a company identifier from ${idArg || urlArg}`);
+  }
+
+  try {
+    const profile = await fetchOneProfile({
+      client,
+      config,
+      identifier,
+      includeRaw: Boolean(args.includeRaw),
+    });
+    const out = {
+      enriched_at: new Date().toISOString(),
+      kind: "company_profile",
+      source: null,
+      identifier,
+      requested: 1,
+      returned: 1,
+      failed: 0,
+      skipped: 0,
+      items: [profile],
+    };
+    const outPath =
+      args.out || join(config.outputDir, `companies-profiles-${timestamp()}.json`);
+    writeJson(outPath, out);
+    console.error(`Wrote 1 company profile to ${outPath}`);
+    console.log(outPath);
+  } catch (err) {
+    const out = {
+      enriched_at: new Date().toISOString(),
+      kind: "company_profile",
+      source: null,
+      identifier,
+      requested: 1,
+      returned: 0,
+      failed: 1,
+      skipped: 0,
+      items: [{ profile_error: err.message || String(err), identifier }],
+    };
+    const outPath =
+      args.out || join(config.outputDir, `companies-profiles-${timestamp()}.json`);
+    writeJson(outPath, out);
+    console.error(`Failed to fetch ${identifier}: ${err.message || err}`);
+    console.log(outPath);
+    process.exitCode = 1;
+  }
+}
+
+async function cmdJobs(args) {
+  const fromPath = args.from || args._[0];
+  if (!fromPath) throw new Error(`Missing --from.\n\n${usage()}`);
+
+  const count = parseCount(args.count);
+  const config = getConfig();
+  const client = new UnipileClient(config);
+  await client.ensureLinkedInAccounts();
+
+  const envelope = readExtract(fromPath);
+  const result = await attachJobs({
+    client,
+    config,
+    envelope,
+    count,
+    includeRaw: Boolean(args.includeRaw),
+    onProgress({ index, total, companyId, ok, jobCount, error }) {
+      console.error(
+        `  ${index}/${total} ${companyId}${ok ? `  ${jobCount} jobs` : `  ! ${error || "failed"}`}`,
+      );
+    },
+  });
+
+  const requested = result.requested;
+  const failed = result.failed;
+  const returned = requested - failed;
+  const out = {
+    enriched_at: new Date().toISOString(),
+    kind: result.kind,
+    source: fromPath,
+    url: envelope.url ?? null,
+    requested,
+    returned,
+    failed,
+    skipped: result.skipped || 0,
+    jobs_returned: result.jobs_returned,
+    items: result.items,
+  };
+
+  const outPath = args.out || join(config.outputDir, `companies-jobs-${timestamp()}.json`);
+  writeJson(outPath, out);
+  console.error(
+    `Wrote ${result.jobs_returned} jobs across ${returned} companies to ${outPath}` +
+      (failed ? ` (${failed} failed)` : "") +
+      (result.skipped ? ` (${result.skipped} skipped)` : ""),
+  );
+  console.log(outPath);
+}
+
+async function cmdListAccounts() {
+  const config = getConfig();
+  const client = new UnipileClient(config);
+  const accounts = await client.fetchAllAccounts();
 
   if (!accounts.length) {
     console.error("No accounts returned. Check UNIPILE_API_KEY and UNIPILE_DSN.");
@@ -129,11 +312,12 @@ async function cmdListAccounts() {
     const id = account.id ?? account.account_id ?? "?";
     const type = account.type ?? account.provider ?? "";
     const name = account.name ?? account.display_name ?? "";
-    const current = id === config.accountId ? "  ← UNIPILE_ACCOUNT_ID" : "";
-    console.error(`  ${id}  ${type}  ${name}${current}`);
+    const status = sourceStatusSummary(account);
+    const sn = isLinkedInAccount(account) && hasSalesNavigator(account) ? "  SN" : "";
+    console.error(`  ${id}  ${type}  ${name}  [${status}]${sn}`);
   }
   console.error(
-    `\nSet UNIPILE_ACCOUNT_ID in .env to the LinkedIn account that has Sales Navigator.`,
+    `\nExtract, company-profile, and jobs round-robin connected LinkedIn accounts automatically.`,
   );
 }
 
@@ -148,6 +332,10 @@ async function main() {
   const args = parseArgs(argv.slice(1));
   if (command === "extract") {
     await cmdExtract(args);
+  } else if (command === "company-profile") {
+    await cmdCompanyProfile(args);
+  } else if (command === "jobs") {
+    await cmdJobs(args);
   } else if (command === "list-accounts") {
     await cmdListAccounts();
   } else {

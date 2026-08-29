@@ -38,35 +38,30 @@ function normalizeDsn(dsn) {
   return dsn.replace(/^https?:\/\//, "").replace(/\/+$/, "");
 }
 
-export function getConfig({ requireAccount = true } = {}) {
+export function getConfig() {
   const missing = [];
   const apiKey = process.env.UNIPILE_API_KEY?.trim();
   const dsn = process.env.UNIPILE_DSN?.trim();
-  const accountId = process.env.UNIPILE_ACCOUNT_ID?.trim();
 
   if (!apiKey) missing.push("UNIPILE_API_KEY");
   if (!dsn) missing.push("UNIPILE_DSN");
-  if (requireAccount && !accountId) missing.push("UNIPILE_ACCOUNT_ID");
 
   if (missing.length) {
     throw new Error(
       `Missing required env var(s): ${missing.join(", ")}.\n` +
-        `Copy .env.example to .env and fill them in.` +
-        (missing.includes("UNIPILE_ACCOUNT_ID") && apiKey && dsn
-          ? `\nTip: run \`npm run accounts\` to look up your account id.`
-          : ""),
+        `Copy .env.example to .env and fill them in.`,
     );
   }
 
   return {
     apiKey,
     baseUrl: `https://${normalizeDsn(dsn)}`,
-    accountId,
     // Pause between pages. LinkedIn throttles aggressive pagination.
     delayMinMs: Number(process.env.DELAY_MIN_MS ?? 2500),
     delayMaxMs: Number(process.env.DELAY_MAX_MS ?? 6500),
     maxRetries: Number(process.env.MAX_RETRIES ?? 4),
     pageLimit: 100,
+    jobPageLimit: 50,
     outputDir: process.env.OUTPUT_DIR?.trim() || join(ROOT, "output"),
   };
 }

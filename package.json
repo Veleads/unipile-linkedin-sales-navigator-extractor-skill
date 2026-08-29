@@ -8,7 +8,9 @@
   },
   "scripts": {
     "extract": "node src/cli.js extract",
-    "accounts": "node src/cli.js list-accounts"
+    "accounts": "node src/cli.js list-accounts",
+    "company-profile": "node src/cli.js company-profile",
+    "jobs": "node src/cli.js jobs"
   },
   "engines": {
     "node": ">=20"

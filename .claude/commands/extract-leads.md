@@ -25,7 +25,7 @@ npm run extract -- --url "<url>"
 
 Do not call Unipile with curl. Do not skip or shorten the CLI's human-like delays.
 
-If `.env` is missing `UNIPILE_ACCOUNT_ID`, run `npm run accounts` first, put the LinkedIn account id in `.env`, then extract.
+The CLI loads connected LinkedIn accounts from Unipile and round-robins them. Do not ask for an account id.
 
 ## After it finishes
 
