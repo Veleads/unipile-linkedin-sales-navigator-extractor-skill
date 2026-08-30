@@ -10,7 +10,10 @@
     "extract": "node src/cli.js extract",
     "accounts": "node src/cli.js list-accounts",
     "company-profile": "node src/cli.js company-profile",
-    "jobs": "node src/cli.js jobs"
+    "jobs": "node src/cli.js jobs",
+    "connect-link": "node src/cli.js connect-link",
+    "connect-hook": "node src/cli.js connect-hook",
+    "connect": "node src/cli.js connect"
   },
   "engines": {
     "node": ">=20"

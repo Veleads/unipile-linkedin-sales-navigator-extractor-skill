@@ -58,6 +58,34 @@ npm run jobs -- --from output/companies-profiles-<timestamp>.json
 
 One classic job search per company, paginated until Unipile has no next cursor. Pass `--count N` to cap jobs per company. Jobs are attached as `jobs` on company items (or `company_profile.jobs` on people). Output is `output/companies-jobs-<timestamp>.json`.
 
+## Connect accounts
+
+Send a colleague one link. They open it, sign in, and their LinkedIn seat joins the workspace.
+
+```bash
+npm run connect
+npm run connect -- --label "ali"
+```
+
+This starts a local hook and opens a free cloudflared quick tunnel (no Cloudflare account), then prints a `https://<random>.trycloudflare.com/connect` URL plus a ready-to-paste WhatsApp message. cloudflared is downloaded once into `.cache/` if it is not already on your PATH; set `CLOUDFLARED_BIN` to point at your own copy.
+
+Why a hook rather than a bare Unipile link: Unipile drops every hosted-auth URL on its daily restart, and each one is meant for a single person. The hook mints a fresh wizard per visitor, so the same URL keeps working for everyone you send it to.
+
+The shared URL first serves a plain landing page with a Continue button. Only that tap mints a wizard, so a chat app fetching the URL to build a link preview cannot burn one.
+
+When someone finishes, the terminal prints `OK <name> connected - account_id ...` and appends a row to `output/connections.jsonl`. They land on a confirmation page instead of a raw Unipile screen.
+
+Two caveats: the tunnel hostname is random and changes on every restart, and the link only works while the process runs. Ctrl+C to stop.
+
+Other modes:
+
+```bash
+npm run connect -- --direct      # one raw wizard URL, no server, no tunnel
+npm run connect -- --no-tunnel   # hook only, behind your own CONNECT_HOOK_PUBLIC_URL
+```
+
+Set `CONNECT_HOOK_TOKEN` to require `?t=<token>` on the shared link. `connect-link` and `connect-hook` still work as aliases.
+
 ## Claude Code
 
 `/extract-leads <url> [count]` runs the extract CLI. Omit count to fetch every page Unipile returns.
@@ -65,3 +93,5 @@ One classic job search per company, paginated until Unipile has no next cursor. 
 `/get-company-profile <extract.json|id>` enriches that extract (or looks up one company).
 
 `/get-job-postings <extract-or-profiles.json>` attaches classic LinkedIn job postings for each company.
+
+`/get-connect-link` starts the tunneled connect hook and gives you the WhatsApp link. `/get-connect-link direct` mints a single raw wizard URL instead.

@@ -12,6 +12,16 @@ export class UnipileError extends Error {
 /** 429 and 5xx are worth retrying; 4xx client errors are not. */
 const isRetryable = (status) => status === 429 || (status >= 500 && status < 600);
 
+/**
+ * Round-robin cursor per workload. "search" draws from Sales Navigator seats
+ * only; "profile" and "jobs" draw from every connected LinkedIn account.
+ */
+const ROTATION_CURSORS = {
+  search: "searchIndex",
+  profile: "profileIndex",
+  jobs: "jobsIndex",
+};
+
 export function isLinkedInAccount(account) {
   const type = String(account?.type ?? account?.provider ?? "").toUpperCase();
   return type === "LINKEDIN";
@@ -61,6 +71,7 @@ export class UnipileClient {
     this.linkedinAccounts = [];
     this.searchIndex = 0;
     this.profileIndex = 0;
+    this.jobsIndex = 0;
     this.accountsLoaded = false;
     this.didLogPools = false;
     this.lastSuccessfulSearchAccountId = null;
@@ -193,13 +204,14 @@ export class UnipileClient {
     this.didLogPools = true;
     const connected = this.activeAccounts();
     const sn = connected.filter((account) => account.hasSalesNavigator);
-    const searchNote = sn.length
-      ? `Search will round-robin ${sn.length} Sales Navigator seat(s)`
-      : `Search will round-robin all ${connected.length} connected LinkedIn account(s) (none advertised Sales Navigator)`;
     console.error(
-      `LinkedIn accounts: ${connected.length} connected (${sn.length} with Sales Navigator). ` +
-        `${searchNote}; company profiles will use all ${connected.length}.`,
+      `LinkedIn accounts: ${connected.length} connected, ${sn.length} with Sales Navigator.\n` +
+        `  Sales Navigator search round-robins the ${sn.length} seat(s) that have it.\n` +
+        `  Company profiles and job search round-robin all ${connected.length}.`,
     );
+    if (!sn.length) {
+      console.error(`  ! No Sales Navigator seat connected, so extract will fail.`);
+    }
   }
 
   activeAccounts() {
@@ -208,17 +220,29 @@ export class UnipileClient {
 
   pool(kind) {
     const connected = this.activeAccounts();
-    if (kind === "search") {
-      const sn = connected.filter((account) => account.hasSalesNavigator);
-      return sn.length ? sn : connected;
-    }
+    // Sales Navigator search only works on a seat that actually holds the
+    // subscription. No fallback to plain accounts: borrowing one there just
+    // trades a clear error for an empty or misleading result set.
+    if (kind === "search") return connected.filter((account) => account.hasSalesNavigator);
     return connected;
+  }
+
+  poolEmptyMessage(kind) {
+    if (kind === "search") {
+      return (
+        "No connected LinkedIn account has Sales Navigator, which Sales Navigator " +
+        "search requires. Run `npm run accounts` to see what is connected, or " +
+        "`npm run connect` to add a seat that has it."
+      );
+    }
+    return "No connected LinkedIn accounts available.";
   }
 
   pickAccount(kind, excludeIds = new Set()) {
     const available = this.pool(kind).filter((account) => !excludeIds.has(account.id));
     if (!available.length) return null;
-    const indexKey = kind === "search" ? "searchIndex" : "profileIndex";
+    // Each workload keeps its own cursor so one does not skew another's spread.
+    const indexKey = ROTATION_CURSORS[kind] ?? "profileIndex";
     const account = available[this[indexKey] % available.length];
     this[indexKey] += 1;
     return account.id;
@@ -233,6 +257,9 @@ export class UnipileClient {
 
   async withAccountRotation(kind, fn, { cursor } = {}) {
     await this.ensureLinkedInAccounts();
+
+    // Fail up front with a reason rather than after an opaque exhausted loop.
+    if (!this.pool(kind).length) throw new Error(this.poolEmptyMessage(kind));
 
     const tried = new Set();
     let lastError;
@@ -283,10 +310,7 @@ export class UnipileClient {
       }
     }
 
-    throw (
-      lastError ||
-      new Error("No connected LinkedIn accounts remaining to call Unipile.")
-    );
+    throw lastError || new Error(this.poolEmptyMessage(kind));
   }
 
   /**
@@ -317,14 +341,14 @@ export class UnipileClient {
 
   /**
    * One page of classic LinkedIn job search for a numeric company id.
-   * Uses the profile account pool (no Sales Navigator required).
+   * Round-robins every connected account; classic search needs no subscription.
    *
    * `region` matters: without it LinkedIn scopes the search to the acting
    * account's own location, so a company that only posts abroad returns 0.
    */
   searchJobs({ companyId, cursor, limit, region }) {
     return this.withAccountRotation(
-      "profile",
+      "jobs",
       (accountId) =>
         this.request("/api/v1/linkedin/search", {
           method: "POST",
@@ -339,5 +363,33 @@ export class UnipileClient {
         }),
       { cursor },
     );
+  }
+
+  /**
+   * Hosted-auth wizard URL. Workspace-scoped (API key only, no LinkedIn account).
+   */
+  createHostedAuthLink({
+    providers = ["LINKEDIN"],
+    expiresOn,
+    name,
+    notifyUrl,
+    successRedirectUrl,
+    failureRedirectUrl,
+  } = {}) {
+    return this.request("/api/v1/hosted/accounts/link", {
+      method: "POST",
+      body: {
+        type: "create",
+        providers,
+        api_url: this.config.baseUrl,
+        expiresOn,
+        ...(name ? { name } : {}),
+        // Callbacks only work when the hook is publicly reachable, so they are
+        // omitted entirely for the one-shot `connect --direct` path.
+        ...(notifyUrl ? { notify_url: notifyUrl } : {}),
+        ...(successRedirectUrl ? { success_redirect_url: successRedirectUrl } : {}),
+        ...(failureRedirectUrl ? { failure_redirect_url: failureRedirectUrl } : {}),
+      },
+    });
   }
 }

@@ -66,5 +66,13 @@ export function getConfig() {
     // "Worldwide" keeps a company's postings visible regardless of seat country.
     jobRegion: process.env.JOB_REGION?.trim() || "92000000",
     outputDir: process.env.OUTPUT_DIR?.trim() || join(ROOT, "output"),
+    connectHookPort: Number(process.env.CONNECT_HOOK_PORT ?? 8787),
+    connectHookToken: process.env.CONNECT_HOOK_TOKEN?.trim() || "",
+    // Only used with --no-tunnel, when you run your own tunnel.
+    connectHookPublicUrl: process.env.CONNECT_HOOK_PUBLIC_URL?.trim() || "",
+    connectLogPath: join(
+      process.env.OUTPUT_DIR?.trim() || join(ROOT, "output"),
+      "connections.jsonl",
+    ),
   };
 }

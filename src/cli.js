@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { getConfig } from "./config.js";
 import { extract } from "./extract.js";
+import {
+  appendConnectionLog,
+  mintConnectUrl,
+  parseProviders,
+  shareUrl,
+  startConnectHook,
+  whatsappText,
+} from "./connect.js";
+import { resolveCloudflared, startTunnel } from "./tunnel.js";
 import { attachJobs } from "./jobs.js";
 import {
   enrichFromExtract,
@@ -25,7 +35,15 @@ function usage() {
   node src/cli.js company-profile --from <extract.json> [--out <path>] [--include-raw]
   node src/cli.js company-profile --id <company-id-or-slug> [--out <path>] [--include-raw]
   node src/cli.js jobs --from <companies-or-profiles.json> [--count <n>] [--region <geo-id>] [--out <path>] [--include-raw]
+  node src/cli.js connect [--label <name>] [--hours 2] [--providers LINKEDIN]
+                          [--port 8787] [--token <secret>] [--direct] [--no-tunnel]
   node src/cli.js list-accounts
+
+connect opens a free cloudflared tunnel and prints one https URL to send over
+WhatsApp. Everyone who opens it gets a freshly minted Unipile wizard, so the
+link survives Unipile's daily expiry of hosted-auth URLs. It stays alive until
+you stop it. Use --direct for a single raw wizard URL with no tunnel, or
+--no-tunnel to run the hook behind your own tunnel (CONNECT_HOOK_PUBLIC_URL).
 
 Omit --count on extract to fetch every page Unipile returns (LinkedIn caps Sales
 Navigator people at ~2500 and companies at ~1000). On jobs, --count caps jobs
@@ -45,13 +63,23 @@ function parseArgs(argv) {
     const token = argv[i];
     if (token === "--include-raw") {
       args.includeRaw = true;
+    } else if (token === "--direct") {
+      args.direct = true;
+    } else if (token === "--no-tunnel") {
+      args.noTunnel = true;
     } else if (
       token === "--url" ||
       token === "--count" ||
       token === "--out" ||
       token === "--from" ||
       token === "--id" ||
-      token === "--region"
+      token === "--region" ||
+      token === "--name" ||
+      token === "--label" ||
+      token === "--hours" ||
+      token === "--port" ||
+      token === "--token" ||
+      token === "--providers"
     ) {
       const value = argv[++i];
       if (value === undefined) throw new Error(`Missing value for ${token}`);
@@ -85,6 +113,24 @@ function parseCount(raw) {
     throw new Error(`--count must be a positive integer, got ${raw}\n\n${usage()}`);
   }
   return count;
+}
+
+function parseHours(raw) {
+  if (raw === undefined) return 2;
+  const hours = Number(raw);
+  if (!Number.isFinite(hours) || hours <= 0) {
+    throw new Error(`--hours must be a positive number, got ${raw}\n\n${usage()}`);
+  }
+  return hours;
+}
+
+function parsePort(raw, fallback) {
+  if (raw === undefined) return fallback;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`--port must be an integer 1–65535, got ${raw}\n\n${usage()}`);
+  }
+  return port;
 }
 
 function readExtract(path) {
@@ -322,9 +368,104 @@ async function cmdListAccounts() {
     const sn = isLinkedInAccount(account) && hasSalesNavigator(account) ? "  SN" : "";
     console.error(`  ${id}  ${type}  ${name}  [${status}]${sn}`);
   }
+  const sn = accounts.filter(
+    (account) => isLinkedInAccount(account) && hasSalesNavigator(account),
+  ).length;
   console.error(
-    `\nExtract, company-profile, and jobs round-robin connected LinkedIn accounts automatically.`,
+    `\nExtract (Sales Navigator search) round-robins only the ${sn} seat(s) marked SN.\n` +
+      `company-profile and jobs round-robin every connected LinkedIn account.`,
   );
+}
+
+async function cmdConnect(args) {
+  const config = getConfig();
+  const client = new UnipileClient(config);
+  const hours = parseHours(args.hours);
+  const providers = parseProviders(args.providers);
+  const label = args.label ?? args.name;
+
+  // One raw wizard URL, no server and no tunnel. Single use, and Unipile drops
+  // every hosted-auth link on its daily restart, so send it right away.
+  if (args.direct) {
+    const url = await mintConnectUrl(client, { providers, hours, name: label });
+    console.error(`\nWhatsApp:\n${whatsappText(url, label)}\n`);
+    console.error("This wizard URL is single-use and expires. Send it now.");
+    console.log(url);
+    return;
+  }
+
+  const port = parsePort(args.port, config.connectHookPort);
+  const token = args.token ?? config.connectHookToken;
+
+  const hook = await startConnectHook({
+    client,
+    port,
+    token,
+    hours,
+    providers,
+    label,
+    notifySecret: randomUUID(),
+    onEvent: (message) => console.error(`  ${message}`),
+    onConnected: (payload) => {
+      const status = String(payload?.status ?? "").toUpperCase();
+      const who = payload?.name ? `${payload.name} ` : "";
+      if (status === "CREATION_SUCCESS" || status === "RECONNECTED") {
+        console.error(`\n  OK  ${who}connected - account_id ${payload?.account_id ?? "?"}`);
+      } else {
+        console.error(`\n  !!  ${who}callback: ${status || "unknown status"}`);
+      }
+      try {
+        appendConnectionLog(config.connectLogPath, payload);
+      } catch (err) {
+        console.error(`  (could not write ${config.connectLogPath}: ${err.message})`);
+      }
+    },
+  });
+  console.error(`Hook listening on http://0.0.0.0:${port}`);
+
+  let tunnel = null;
+  let origin;
+
+  if (args.noTunnel) {
+    origin = config.connectHookPublicUrl || `http://localhost:${port}`;
+  } else {
+    const bin = await resolveCloudflared({ onProgress: (m) => console.error(m) });
+    console.error("Opening a cloudflared quick tunnel...");
+    try {
+      tunnel = await startTunnel({ bin, port });
+    } catch (err) {
+      await hook.close();
+      throw err;
+    }
+    origin = tunnel.url;
+  }
+
+  hook.setOrigin(origin);
+  const share = shareUrl({ origin, token });
+
+  const shutdown = async () => {
+    console.error("\nStopping. The link above stops working now.");
+    tunnel?.stop();
+    await hook.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  console.error(`\nShare: ${share}`);
+  console.error(`\nWhatsApp:\n${whatsappText(share, label)}\n`);
+  if (origin.startsWith("http://localhost")) {
+    console.error(
+      "This is a localhost URL. Nobody outside this machine can open it - " +
+        "set CONNECT_HOOK_PUBLIC_URL, or drop --no-tunnel to get a public one.",
+    );
+  } else {
+    console.error(
+      "Live only while this process runs, and the hostname changes on restart.\n" +
+        "Each visitor gets a freshly minted wizard. Ctrl+C to stop.",
+    );
+  }
+  console.log(share);
 }
 
 async function main() {
@@ -342,6 +483,13 @@ async function main() {
     await cmdCompanyProfile(args);
   } else if (command === "jobs") {
     await cmdJobs(args);
+  } else if (command === "connect") {
+    await cmdConnect(args);
+  } else if (command === "connect-link") {
+    // Legacy alias: the one-shot raw wizard URL.
+    await cmdConnect({ ...args, direct: true });
+  } else if (command === "connect-hook") {
+    await cmdConnect(args);
   } else if (command === "list-accounts") {
     await cmdListAccounts();
   } else {
